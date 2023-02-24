@@ -1,4 +1,7 @@
-use actix_web::{delete, get, post, put, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{
+    delete, error::ErrorInternalServerError, get, post, put, web, App, Error, HttpResponse,
+    HttpServer,
+};
 use diesel::pg::PgConnection;
 use diesel::{
     prelude::*,
@@ -16,39 +19,55 @@ use db::models::{NewUser, User};
 use db::schema::users::dsl::*;
 
 #[get("/users")]
-async fn get_users(db_pool: web::Data<DbPool>) -> impl Responder {
-    let mut conn = db_pool
-        .get()
-        .expect("Failed to get a connection from the pool");
-    let results = users.load::<User>(&mut conn).unwrap_or_default();
-    HttpResponse::Ok().json(results)
+async fn get_users(db_pool: web::Data<DbPool>) -> Result<HttpResponse, Error> {
+    let fetched_users = web::block(move || {
+        let mut conn = db_pool
+            .get()
+            .expect("Failed to get a connection from the pool");
+        users.load::<User>(&mut conn)
+    })
+    .await?
+    .map_err(ErrorInternalServerError)?;
+
+    Ok(HttpResponse::Ok().json(fetched_users))
 }
 
 #[get("/users/{id}")]
-async fn get_user_by_id(db_pool: web::Data<DbPool>, user_id: web::Path<Uuid>) -> impl Responder {
-    let mut conn = db_pool
-        .get()
-        .expect("Failed to get a connection from the pool");
-    let result = users
-        .filter(id.eq(user_id.to_owned()))
-        .first::<User>(&mut conn);
+async fn get_user_by_id(
+    db_pool: web::Data<DbPool>,
+    user_id: web::Path<Uuid>,
+) -> Result<HttpResponse, Error> {
+    let user = web::block(move || {
+        let mut conn = db_pool
+            .get()
+            .expect("Failed to get a connection from the pool");
+        users
+            .filter(id.eq(user_id.to_owned()))
+            .first::<User>(&mut conn)
+    })
+    .await?
+    .map_err(ErrorInternalServerError)?;
 
-    match result {
-        Ok(user) => HttpResponse::Ok().json(user),
-        Err(err) => HttpResponse::NotFound().body(err.to_string()),
-    }
+    Ok(HttpResponse::Ok().json(user))
 }
 
 #[post("/users/create")]
-async fn create_new_user(db_pool: web::Data<DbPool>, new_user: web::Json<NewUser>) -> HttpResponse {
-    let mut conn = db_pool
-        .get()
-        .expect("Failed to get a connection from the pool");
-    diesel::insert_into(users)
-        .values(&*new_user)
-        .execute(&mut conn)
-        .expect("Error");
-    HttpResponse::Ok().json(new_user)
+async fn create_new_user(
+    db_pool: web::Data<DbPool>,
+    new_user_form: web::Json<NewUser>,
+) -> Result<HttpResponse, Error> {
+    let new_user = web::block(move || {
+        let mut conn = db_pool
+            .get()
+            .expect("Failed to get a connection from the pool");
+        diesel::insert_into(users)
+            .values(new_user_form.into_inner())
+            .get_result::<User>(&mut conn)
+    })
+    .await?
+    .map_err(ErrorInternalServerError)?;
+
+    Ok(HttpResponse::Ok().json(new_user))
 }
 
 #[put("/users/update/{id}")]
@@ -56,40 +75,42 @@ async fn update_user(
     db_pool: web::Data<DbPool>,
     user_id: web::Path<Uuid>,
     user_form: web::Json<NewUser>,
-) -> HttpResponse {
-    web::block(move || {
-        let mut conn = db_pool
-            .get()
-            .expect("Failed to get a connection from the pool");
+) -> Result<HttpResponse, Error> {
+    let count = web::block(move || {
+        let mut conn = db_pool.get().expect("Failed to connect to the database");
         diesel::update(users.filter(id.eq(user_id.to_owned())))
             .set((
                 name.eq(user_form.name.to_owned()),
                 email.eq(user_form.email.to_owned()),
             ))
             .execute(&mut conn)
-            .expect("Error");
     })
-    .await
-    .expect("Error");
-    HttpResponse::Ok().body("Updated user")
+    .await?
+    .map_err(ErrorInternalServerError)?;
+
+    if count == 0 {
+        Ok(HttpResponse::NotFound().body("User not exist"))
+    } else {
+        Ok(HttpResponse::Ok().body("Deleted user"))
+    }
 }
 
 #[delete("/users/delete/{id}")]
-async fn delete_user(db_pool: web::Data<DbPool>, user_id: web::Path<Uuid>) -> HttpResponse {
-    let mut conn = db_pool
-        .get()
-        .expect("Failed to get a connection from the pool");
-    let result = diesel::delete(users.filter(id.eq(user_id.to_owned()))).execute(&mut conn);
+async fn delete_user(
+    db_pool: web::Data<DbPool>,
+    user_id: web::Path<Uuid>,
+) -> Result<HttpResponse, Error> {
+    let count = web::block(move || {
+        let mut conn = db_pool.get().expect("Failed to connect to the database");
+        diesel::delete(users.filter(id.eq(user_id.to_owned()))).execute(&mut conn)
+    })
+    .await?
+    .map_err(ErrorInternalServerError)?;
 
-    match result {
-        Ok(count) => {
-            if count != 0 {
-                HttpResponse::Ok().body("Deleted user")
-            } else {
-                HttpResponse::NotFound().body("User not exists")
-            }
-        }
-        Err(err) => HttpResponse::NotFound().body(err.to_string()),
+    if count == 0 {
+        Ok(HttpResponse::NotFound().body("User not exist"))
+    } else {
+        Ok(HttpResponse::Ok().body("Deleted user"))
     }
 }
 
