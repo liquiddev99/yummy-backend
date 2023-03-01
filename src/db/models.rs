@@ -26,3 +26,17 @@ pub struct NewUser {
     pub email: String,
     pub password: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LoginUser {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserClaim {
+    pub exp: i64,
+    pub id: Uuid,
+    pub name: String,
+    pub email: String,
+}
