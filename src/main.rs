@@ -9,7 +9,9 @@ mod db;
 mod routes;
 mod types;
 
-use routes::users::{delete_user, get_user_by_id, get_users, login, signup, update_user};
+use routes::users::{
+    delete_user, get_profile, get_user_by_id, get_users, login, logout, signup, update_user,
+};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -26,6 +28,7 @@ async fn main() -> std::io::Result<()> {
             .allow_any_origin()
             .allow_any_method()
             .allow_any_header()
+            .supports_credentials()
             .max_age(3600);
         App::new()
             .wrap(cors)
@@ -36,6 +39,8 @@ async fn main() -> std::io::Result<()> {
             .service(update_user)
             .service(delete_user)
             .service(login)
+            .service(logout)
+            .service(get_profile)
     })
     .bind(("127.0.0.1", 8080))?
     .run()

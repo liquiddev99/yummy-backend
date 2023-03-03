@@ -1,7 +1,8 @@
 use actix_web::{
+    cookie::{time, Cookie, SameSite::Strict},
     delete,
     error::{ErrorBadRequest, ErrorInternalServerError, ErrorNotFound},
-    get, post, put, web, Error, HttpResponse,
+    get, post, put, web, Error, HttpRequest, HttpResponse,
 };
 use bcrypt::{hash, verify, DEFAULT_COST};
 use diesel::{
@@ -9,13 +10,13 @@ use diesel::{
     r2d2::{self, ConnectionManager},
 };
 use dotenvy::dotenv;
-use jsonwebtoken::{encode, EncodingKey, Header};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use std::env;
 use uuid::Uuid;
 
 use crate::db::models::{LoginUser, NewUser, User, UserClaim};
 use crate::db::schema::users::dsl::*;
-use crate::types::response::{ErrorCode, ErrorRespone, TokenResponse};
+use crate::types::response::{ErrorCode, ErrorRespone};
 
 type DbPool = r2d2::Pool<ConnectionManager<PgConnection>>;
 
@@ -33,7 +34,26 @@ pub async fn get_users(db_pool: web::Data<DbPool>) -> Result<HttpResponse, Error
     Ok(HttpResponse::Ok().json(fetched_users))
 }
 
-#[get("/users/{id}")]
+#[get("/users/profile")]
+pub async fn get_profile(req: HttpRequest) -> Result<HttpResponse, Error> {
+    let user_session = match req.cookie("user_session") {
+        Some(cookie) => cookie,
+        None => return Err(ErrorBadRequest("Cannot find the user session")),
+    };
+    dotenv().ok();
+    let jwt_key = env::var("JWT_SECRET").expect("JWT Key must be set");
+    let user = decode::<UserClaim>(
+        user_session.value(),
+        &DecodingKey::from_secret(jwt_key.as_ref()),
+        &Validation::new(Algorithm::HS256),
+    )
+    .unwrap()
+    .claims;
+
+    Ok(HttpResponse::Ok().json(user))
+}
+
+#[get("/users/profile/{id}")]
 pub async fn get_user_by_id(
     db_pool: web::Data<DbPool>,
     user_id: web::Path<Uuid>,
@@ -126,7 +146,7 @@ pub async fn signup(
     let new_user = result.unwrap();
 
     // Create JWT token
-    let expiration = chrono::Utc::now() + chrono::Duration::minutes(30);
+    let expiration = chrono::Utc::now() + chrono::Duration::hours(6);
     let user_claim = UserClaim {
         exp: expiration.timestamp(),
         id: new_user.id,
@@ -143,9 +163,15 @@ pub async fn signup(
     )
     .map_err(ErrorInternalServerError)?;
 
-    let res = TokenResponse { token };
+    let cookie = Cookie::build("user_session", token)
+        .secure(true)
+        .http_only(true)
+        .path("/")
+        .same_site(Strict)
+        .max_age(time::Duration::days(1))
+        .finish();
 
-    Ok(HttpResponse::Ok().json(res))
+    Ok(HttpResponse::Ok().cookie(cookie).finish())
 }
 
 #[post("/users/login")]
@@ -178,7 +204,7 @@ pub async fn login(
         return Err(ErrorBadRequest("Invalid Credentials"));
     }
 
-    let expiration = chrono::Utc::now() + chrono::Duration::minutes(30);
+    let expiration = chrono::Utc::now() + chrono::Duration::hours(6);
     let user_claim = UserClaim {
         exp: expiration.timestamp(),
         id: user.id,
@@ -195,9 +221,29 @@ pub async fn login(
     )
     .map_err(ErrorInternalServerError)?;
 
-    let response = TokenResponse { token };
+    let cookie = Cookie::build("user_session", token)
+        .secure(true)
+        .http_only(true)
+        .path("/")
+        .same_site(Strict)
+        .max_age(time::Duration::days(1))
+        .finish();
 
-    Ok(HttpResponse::Ok().json(response))
+    Ok(HttpResponse::Ok().cookie(cookie).finish())
+}
+
+#[post("/users/logout")]
+pub async fn logout() -> Result<HttpResponse, Error> {
+    let cookie = Cookie::build("user_session", "")
+        .secure(true)
+        .http_only(true)
+        .path("/")
+        .same_site(Strict)
+        .max_age(time::Duration::milliseconds(0))
+        .expires(time::OffsetDateTime::now_utc())
+        .finish();
+
+    Ok(HttpResponse::Ok().cookie(cookie).finish())
 }
 
 #[put("/users/update/{id}")]
